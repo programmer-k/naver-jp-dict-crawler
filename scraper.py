@@ -7,6 +7,14 @@ from playwright_helpers import BrowserContext, load_jlpt_page, discover_pos_butt
 from output_utils import write_csv, sanitize_filename
 
 
+# mapping of visible POS labels (lowercased) to short names
+POS_MAP = {
+    '전체': 'all', '명사': 'noun', '동사': 'verb', '형용사': 'adj', '부사': 'adv',
+    '조사': 'particle', '대명사': 'pronoun', '접사': 'affix', '감동사': 'interj', '형용동사': 'na_adj',
+    '기타': 'other'
+}
+
+
 def extract_items_from_page(page) -> List[Dict[str, str]]:
     # Return list item elements (links) to be resolved via detail pages.
     candidates = [".component_keyword > li", "ul.list > li", "ul.word_list > li", "div.list li", "div.result_list li", "li.item"]
@@ -35,7 +43,11 @@ def fetch_entry_detail(browser_ctx: BrowserContext, href: str) -> Dict[str, str]
     page = browser_ctx.new_page()
     try:
         full = href if href.startswith('http') else ('https://ja.dict.naver.com/' + href.lstrip('/'))
-        page.goto(full, wait_until='domcontentloaded')
+        try:
+            page.goto(full, wait_until='domcontentloaded', timeout=15000)
+        except Exception as e:
+            print(f"    warning: navigation to {full} failed: {e}")
+            return {'japanese': '', 'reading': '', 'korean': '', 'source_url': full}
         time.sleep(0.6)
         # japanese (prefer kanji if present) and reading (kana)
         jap = ''
@@ -106,15 +118,15 @@ def paginate_click_next(page) -> bool:
 
 
 def normalize_pos_label(raw: str) -> str:
-    m = {
-        '전체': 'all', '명사': 'noun', '동사': 'verb', '형용사': 'adj', '부사': 'adv',
-        '조사': 'particle', '대명사': 'pronoun', '접사': 'affix', '감동사': 'interj', '형용동사': 'na_adj',
-        '기타': 'other'
-    }
     if not raw:
         return 'all'
-    raw = raw.strip()
-    return m.get(raw, ''.join(c if c.isalnum() else '_' for c in raw))
+    key = raw.strip()
+    # discover_pos_buttons may return lowercased keys; try both
+    v = POS_MAP.get(key) or POS_MAP.get(key.lower())
+    if v:
+        return v
+    # fallback: sanitize into a safe token
+    return ''.join(c if c.isalnum() else '_' for c in key)
 
 
 def scrape_level_pos(browser_ctx: BrowserContext, level: int, pos_label_click: str, pos_label_name: str, out_dir: str, max_pages: int = 200):
@@ -126,11 +138,16 @@ def scrape_level_pos(browser_ctx: BrowserContext, level: int, pos_label_click: s
     wait_for_list(page)
     rows = []
     page_count = 0
+    # prepare output file early so we can write progress incrementally
+    fname = f"N{level}_{sanitize_filename(pos_label_name)}.csv"
+    path = os.path.join(out_dir, fname)
+    headers = ['level', 'pos', 'japanese', 'reading', 'korean', 'source_url']
     while True:
         page_count += 1
         if page_count > max_pages:
             break
         items = extract_items_from_page(page)
+        print(f"  page {page_count}: found {len(items)} items")
         for it in items:
             href = it.get('href') or ''
             if not href:
@@ -138,6 +155,12 @@ def scrape_level_pos(browser_ctx: BrowserContext, level: int, pos_label_click: s
             detail = fetch_entry_detail(browser_ctx, href)
             detail.update({'level': f'N{level}', 'pos': pos_label_name})
             rows.append(detail)
+        # write intermediate CSV so user can inspect progress
+        try:
+            write_csv(path, rows, headers)
+            print(f"  saved {len(rows)} rows so far to {path}")
+        except Exception as e:
+            print(f"  warning: failed to write progress CSV: {e}")
         # try to go next
         moved = paginate_click_next(page)
         if not moved:
@@ -171,7 +194,13 @@ def main():
         pos_list = []
         if pos_arg == 'all':
             if all_pos:
-                pos_list = [(k, normalize_pos_label(k)) for k in all_pos.keys()]
+                pos_list = []
+                for k in all_pos.keys():
+                    # include only known POS labels (filter out UI controls like fold/unfold)
+                    if POS_MAP.get(k) or POS_MAP.get(k.lower()) or k in ('all', '전체'):
+                        pos_list.append((k, normalize_pos_label(k)))
+                if not pos_list:
+                    pos_list = [('all', 'all')]
             else:
                 pos_list = [('all', 'all')]
         else:

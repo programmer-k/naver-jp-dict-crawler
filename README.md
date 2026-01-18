@@ -7,7 +7,6 @@ Scraper files are at repository root:
 - `scraper.py` — main scraper CLI
 - `playwright_helpers.py` — Playwright browser helpers
 - `output_utils.py` — CSV writing utilities
-- `validate.py` — simple CSV validation tool
 
 Quick start
 
@@ -29,12 +28,6 @@ python -m playwright install
 
 ```bash
 python scraper.py --levels 1,2,3,4,5 --pos all --out-dir outputs
-```
-
-4. Validate outputs:
-
-```bash
-python validate.py outputs
 ```
 
 Notes
